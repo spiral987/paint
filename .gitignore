@@ -13,3 +13,15 @@
 
 #　Ignore trained model files
 *.pth
+
+# Ignore dependency and build output folders
+node_modules/
+.next/
+frontend/node_modules/
+frontend/.next/
+
+# Common frontend build/cache artifacts
+dist/
+build/
+coverage/
+.turbo/
