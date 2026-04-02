@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type Rect = {
   x: number;
@@ -298,6 +298,7 @@ export default function Home() {
     }
 
     const current = draftSelection;
+    const endedDragMode = dragModeRef.current;
     dragModeRef.current = null;
 
     if (!current || current.width < MIN_SELECTION_SIZE || current.height < MIN_SELECTION_SIZE) {
@@ -307,11 +308,15 @@ export default function Home() {
 
     setSelection(current);
     setDraftSelection(null);
-    setInteractionMode("pan");
+
+    // Creating a brand-new crop is a one-shot mode. After creation, return to pan mode.
+    if (endedDragMode?.type === "create") {
+      setInteractionMode("pan");
+    }
   };
 
   const beginMoveSelection = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (!selection || interactionMode !== "crop") return;
+    if (!selection) return;
 
     event.stopPropagation();
     const point = toOverlayPoint(event);
@@ -327,7 +332,7 @@ export default function Home() {
 
   const beginResizeSelection =
     (handle: ResizeHandle) => (event: React.MouseEvent<HTMLDivElement>) => {
-      if (!selection || interactionMode !== "crop") return;
+      if (!selection) return;
 
       event.stopPropagation();
       const point = toOverlayPoint(event);
@@ -342,64 +347,6 @@ export default function Home() {
       setDraftSelection(selection);
     };
 
-  // eslint-disable-next-line react-hooks/preserve-manual-memoization
-  const sendCroppedFrame = useCallback(async () => {
-    const video = videoRef.current;
-    const canvas = hiddenCanvasRef.current;
-    const overlay = overlayRef.current;
-    const crop = selection;
-
-    if (!video || !canvas || !overlay || !crop) return;
-    if (!video.videoWidth || !video.videoHeight) return;
-
-    const baseWidth = overlay.offsetWidth;
-    const baseHeight = overlay.offsetHeight;
-    if (!baseWidth || !baseHeight) return;
-
-    const scaleX = video.videoWidth / baseWidth;
-    const scaleY = video.videoHeight / baseHeight;
-
-    const sx = Math.round(crop.x * scaleX);
-    const sy = Math.round(crop.y * scaleY);
-    const sw = Math.round(crop.width * scaleX);
-    const sh = Math.round(crop.height * scaleY);
-
-    if (sw <= 0 || sh <= 0) return;
-
-    canvas.width = sw;
-    canvas.height = sh;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
-
-    const blob = await new Promise<Blob | null>((resolve) => {
-      canvas.toBlob((data) => resolve(data), "image/png", 0.95);
-    });
-
-    if (!blob) return;
-
-    const formData = new FormData();
-    formData.append("file", blob, "capture.png");
-
-    try {
-      const res = await fetch("http://localhost:8000/api/predict", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!res.ok) return;
-
-      const responseBlob = await res.blob();
-      setResultImage((prev) => {
-        if (prev) URL.revokeObjectURL(prev);
-        return URL.createObjectURL(responseBlob);
-      });
-    } catch {
-      setCaptureError("切り抜き画像の送信に失敗しました。バックエンド接続を確認してください。");
-    }
-  }, [selection]);
-
   useEffect(() => {
     if (!isCapturing || !selection) {
       if (intervalRef.current) {
@@ -408,6 +355,63 @@ export default function Home() {
       }
       return;
     }
+
+    const sendCroppedFrame = async () => {
+      const video = videoRef.current;
+      const canvas = hiddenCanvasRef.current;
+      const overlay = overlayRef.current;
+      const crop = selection;
+
+      if (!video || !canvas || !overlay || !crop) return;
+      if (!video.videoWidth || !video.videoHeight) return;
+
+      const baseWidth = overlay.offsetWidth;
+      const baseHeight = overlay.offsetHeight;
+      if (!baseWidth || !baseHeight) return;
+
+      const scaleX = video.videoWidth / baseWidth;
+      const scaleY = video.videoHeight / baseHeight;
+
+      const sx = Math.round(crop.x * scaleX);
+      const sy = Math.round(crop.y * scaleY);
+      const sw = Math.round(crop.width * scaleX);
+      const sh = Math.round(crop.height * scaleY);
+
+      if (sw <= 0 || sh <= 0) return;
+
+      canvas.width = sw;
+      canvas.height = sh;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+
+      const blob = await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob((data) => resolve(data), "image/png", 0.95);
+      });
+
+      if (!blob) return;
+
+      const formData = new FormData();
+      formData.append("file", blob, "capture.png");
+
+      try {
+        const res = await fetch("http://localhost:8000/api/predict", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!res.ok) return;
+
+        const responseBlob = await res.blob();
+        setResultImage((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return URL.createObjectURL(responseBlob);
+        });
+      } catch {
+        setCaptureError("切り抜き画像の送信に失敗しました。バックエンド接続を確認してください。");
+      }
+    };
 
     intervalRef.current = window.setInterval(() => {
       void sendCroppedFrame();
@@ -419,7 +423,7 @@ export default function Home() {
         intervalRef.current = null;
       }
     };
-  }, [isCapturing, selection, sendCroppedFrame, captureIntervalSec]);
+  }, [isCapturing, selection, captureIntervalSec]);
 
   useEffect(() => {
     const syncPanOnResize = () => {
@@ -567,7 +571,7 @@ export default function Home() {
             </div>
             <p className="mt-2 text-xs text-slate-400">1〜10秒の範囲で調整できます。</p>
             <p className="mt-1 text-xs text-slate-400">
-              モード: {interactionMode === "crop" ? "トリミング中" : "移動/ズーム"}
+              モード: {interactionMode === "crop" ? "新規トリミング作成" : "移動/ズーム（既存枠は常に編集可）"}
             </p>
           </div>
 
@@ -691,7 +695,7 @@ export default function Home() {
             <p className="font-semibold text-slate-100">使い方</p>
             <p className="mt-2">1. 画面共有を開始</p>
             <p>2. マウスホイールでズーム、ドラッグで移動</p>
-            <p>3. 「トリミング」ボタンで範囲選択（完了後は移動モードへ戻る）</p>
+            <p>3. 「トリミング」ボタンで新規範囲を作成（既存枠はいつでも移動・リサイズ可）</p>
             <p>4. {captureIntervalSec}秒ごとに自動で送信・更新</p>
           </div>
         </aside>
